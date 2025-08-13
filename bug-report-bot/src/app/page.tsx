@@ -3,6 +3,7 @@
 import { Paperclip, SendHorizonal, X } from "lucide-react";
 import { useState, ChangeEvent, useRef, FormEvent, useEffect } from "react";
 import Image from "next/image";
+import ReactMarkdown from "react-markdown";
 
 interface Message {
   role: "user" | "assistant";
@@ -117,7 +118,7 @@ export default function Home() {
                     : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200"
                 } p-4 rounded-lg max-w-lg`}
               >
-                <p>{msg.content}</p>
+                <ReactMarkdown>{msg.content}</ReactMarkdown>
               </div>
             </div>
           ))}
