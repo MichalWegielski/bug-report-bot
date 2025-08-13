@@ -61,12 +61,7 @@ export default function Home() {
 
       const result = await response.json();
 
-      setMessages(
-        result.messages.map((msg: any) => ({
-          role: msg.type === "human" ? "user" : "assistant",
-          content: msg.content,
-        }))
-      );
+      setMessages(result.messages);
     } catch (error) {
       console.error("Błąd podczas komunikacji z API:", error);
     } finally {

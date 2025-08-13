@@ -5,10 +5,14 @@ import {
   START,
   END,
 } from "@langchain/langgraph";
-import { ChatOpenAI } from "@langchain/openai";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { BaseMessage, HumanMessage } from "@langchain/core/messages";
 
 const callModel = async (state: typeof MessagesAnnotation.State) => {
-  const model = new ChatOpenAI({ model: "gpt-4o", temperature: 0 });
+  const model = new ChatGoogleGenerativeAI({
+    model: "gemini-1.5-flash-latest",
+    temperature: 0,
+  });
   const response = await model.invoke(state.messages);
   return { messages: [response] };
 };
@@ -23,5 +27,12 @@ export async function POST(req: Request) {
   const body = await req.json();
   const messages = body.messages ?? [];
   const result = await app.invoke({ messages });
-  return NextResponse.json(result);
+  const formattedResult = {
+    messages: result.messages.map((msg: BaseMessage) => ({
+      role: msg instanceof HumanMessage ? "user" : "assistant",
+      content: msg.content,
+    })),
+  };
+
+  return NextResponse.json(formattedResult);
 }
