@@ -3,7 +3,6 @@
 import { Paperclip, SendHorizonal, X } from "lucide-react";
 import { useState, ChangeEvent, useRef, FormEvent, useEffect } from "react";
 import Image from "next/image";
-import ReactMarkdown from "react-markdown";
 
 interface Message {
   role: "user" | "assistant";
@@ -21,10 +20,12 @@ export default function Home() {
   const [input, setInput] = useState<string>("");
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
+  const [threadId, setThreadId] = useState<string | null>(null);
+
+  const [fileToSend, setFileToSend] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -33,36 +34,39 @@ export default function Home() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() && !fileToSend) return;
+
+    const formData = new FormData();
+    formData.append("text", input);
+
+    if (threadId) {
+      formData.append("threadId", threadId);
+    }
+    formData.append("messages", JSON.stringify(messages));
+
+    if (fileToSend) {
+      formData.append("image", fileToSend);
+    }
 
     const newUserMessage: Message = { role: "user", content: input };
-    const newMessages = [...messages, newUserMessage];
-
-    setMessages(newMessages);
+    setMessages((prev) => [...prev, newUserMessage]);
     setInput("");
+    setFileToSend(null);
+    setPreviewUrl(null);
     setIsLoading(true);
 
     try {
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messages: newMessages.map((msg) => ({
-            type: msg.role === "user" ? "human" : "ai",
-            content: msg.content,
-          })),
-        }),
+        body: formData,
       });
 
-      if (!response.ok) {
-        throw new Error("Błąd serwera");
-      }
+      if (!response.ok) throw new Error("Błąd serwera");
 
       const result = await response.json();
 
       setMessages(result.messages);
+      setThreadId(result.threadId);
     } catch (error) {
       console.error("Błąd podczas komunikacji z API:", error);
     } finally {
@@ -77,10 +81,12 @@ export default function Home() {
     if (!allowedTypes.includes(file.type)) {
       setError("Proszę wybrać plik w formacie JPG lub PNG.");
       setPreviewUrl(null);
+      setFileToSend(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
     setError(null);
+    setFileToSend(file);
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
   };
@@ -88,12 +94,13 @@ export default function Home() {
   const handleRemovePreview = () => {
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
+    setFileToSend(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   return (
-    <div className="h-screen w-screen flex justify-center items-center bg-gray-50 dark:bg-gray-900">
-      <main className="w-3/4 h-4/5 rounded-xl flex flex-col bg-white dark:bg-gray-800">
+    <div className="h-screen w-screen bg-gray-50 dark:bg-gray-900">
+      <main className="w-full h-full flex flex-col bg-white dark:bg-gray-800">
         <header className="p-4 border-b dark:border-gray-700 shadow-sm">
           <h1 className="text-xl font-bold text-gray-800 dark:text-white">
             Bug Report Assistant
@@ -118,7 +125,7 @@ export default function Home() {
                     : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200"
                 } p-4 rounded-lg max-w-lg`}
               >
-                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                <p>{msg.content}</p>
               </div>
             </div>
           ))}
@@ -185,7 +192,7 @@ export default function Home() {
             <button
               type="submit"
               className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
-              disabled={isLoading || !input.trim()}
+              disabled={isLoading || (!input.trim() && !fileToSend)}
             >
               <SendHorizonal className="w-5 h-5" />
             </button>
