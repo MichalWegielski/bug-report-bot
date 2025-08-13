@@ -1,50 +1,102 @@
 "use client";
 
 import { Paperclip, SendHorizonal, X } from "lucide-react";
-import { useState, ChangeEvent, useRef } from "react";
+import { useState, ChangeEvent, useRef, FormEvent, useEffect } from "react";
 import Image from "next/image";
 
+interface Message {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export default function Home() {
+  const [messages, setMessages] = useState<Message[]>([
+    {
+      role: "assistant",
+      content:
+        "Witaj! Jestem tu, aby pomóc Ci stworzyć zgłoszenie błędu. Opisz problem, który napotkałeś. Możesz też od razu załączyć zrzut ekranu.",
+    },
+  ]);
+  const [input, setInput] = useState<string>("");
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+
+    const newUserMessage: Message = { role: "user", content: input };
+    const newMessages = [...messages, newUserMessage];
+
+    setMessages(newMessages);
+    setInput("");
+    setIsLoading(true);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: newMessages.map((msg) => ({
+            type: msg.role === "user" ? "human" : "ai",
+            content: msg.content,
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Błąd serwera");
+      }
+
+      const result = await response.json();
+
+      setMessages(
+        result.messages.map((msg: any) => ({
+          role: msg.type === "human" ? "user" : "assistant",
+          content: msg.content,
+        }))
+      );
+    } catch (error) {
+      console.error("Błąd podczas komunikacji z API:", error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-
-    if (!file) {
-      return;
-    }
-
+    if (!file) return;
     const allowedTypes = ["image/jpeg", "image/png"];
     if (!allowedTypes.includes(file.type)) {
       setError("Proszę wybrać plik w formacie JPG lub PNG.");
       setPreviewUrl(null);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
+      if (fileInputRef.current) fileInputRef.current.value = "";
       return;
     }
-
     setError(null);
-
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
   };
 
   const handleRemovePreview = () => {
-    if (previewUrl) {
-      URL.revokeObjectURL(previewUrl);
-    }
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   return (
-    <div className="h-screen w-full flex justify-center items-center bg-gray-50 dark:bg-gray-900">
+    <div className="h-screen w-screen flex justify-center items-center bg-gray-50 dark:bg-gray-900">
       <main className="w-3/4 h-4/5 rounded-xl flex flex-col bg-white dark:bg-gray-800">
         <header className="p-4 border-b dark:border-gray-700 shadow-sm">
           <h1 className="text-xl font-bold text-gray-800 dark:text-white">
@@ -56,24 +108,25 @@ export default function Home() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          <div className="flex items-start gap-3 justify-start">
-            <div className="bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 p-4 rounded-lg max-w-lg">
-              <p>
-                Witaj! Jestem tu, aby pomóc Ci stworzyć zgłoszenie błędu. Opisz
-                problem, który napotkałeś. Możesz też od razu załączyć zrzut
-                ekranu.
-              </p>
+          {messages.map((msg, index) => (
+            <div
+              key={index}
+              className={`flex items-start gap-3 ${
+                msg.role === "user" ? "justify-end" : "justify-start"
+              }`}
+            >
+              <div
+                className={`${
+                  msg.role === "user"
+                    ? "bg-blue-500 text-white"
+                    : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200"
+                } p-4 rounded-lg max-w-lg`}
+              >
+                <p>{msg.content}</p>
+              </div>
             </div>
-          </div>
-          <div className="flex items-start gap-3 justify-end">
-            <div className="bg-blue-500 text-white p-4 rounded-lg max-w-lg">
-              <p>
-                Cześć, po kliknięciu przycisku "Zapisz" na stronie profilu, cała
-                aplikacja się zawiesza i muszę ją odświeżyć, żeby znowu
-                działała.
-              </p>
-            </div>
-          </div>
+          ))}
+          <div ref={messagesEndRef} />
         </div>
 
         <footer className="p-4 border-t dark:border-gray-700">
@@ -99,7 +152,10 @@ export default function Home() {
             )}
           </div>
 
-          <form className="relative flex items-center gap-2">
+          <form
+            onSubmit={handleSubmit}
+            className="relative flex items-center gap-2"
+          >
             <label
               htmlFor="file-upload"
               className="p-3 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer transition-colors"
@@ -116,14 +172,24 @@ export default function Home() {
             />
 
             <textarea
-              placeholder="Opisz problem lub dodaj komentarz do zrzutu ekranu..."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Opisz problem lub dodaj komentarz..."
               className="flex-1 w-full resize-none bg-gray-100 dark:bg-gray-700 border-transparent rounded-lg p-3 pr-12 text-gray-800 dark:text-gray-200 focus:ring-2 focus:ring-blue-500 focus:outline-none transition-shadow"
               rows={1}
+              disabled={isLoading}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit(e);
+                }
+              }}
             />
 
             <button
               type="submit"
-              className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-blue-600 text-white hover:bg-blue-700 hover:cursor-pointer transition-colors disabled:opacity-50"
+              className="absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-full bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-50"
+              disabled={isLoading || !input.trim()}
             >
               <SendHorizonal className="w-5 h-5" />
             </button>
