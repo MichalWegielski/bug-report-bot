@@ -3,10 +3,12 @@
 import { Paperclip, SendHorizonal, X } from "lucide-react";
 import { useState, ChangeEvent, useRef, FormEvent, useEffect } from "react";
 import Image from "next/image";
+import ReactMarkdown from "react-markdown";
 
 interface Message {
   role: "user" | "assistant";
   content: string;
+  imageUrl?: string;
 }
 
 export default function Home() {
@@ -42,7 +44,6 @@ export default function Home() {
     if (threadId) {
       formData.append("threadId", threadId);
     }
-    formData.append("messages", JSON.stringify(messages));
 
     if (fileToSend) {
       formData.append("image", fileToSend);
@@ -67,6 +68,14 @@ export default function Home() {
 
       setMessages(result.messages);
       setThreadId(result.threadId);
+
+      const lastMessage = result.messages[result.messages.length - 1];
+      if (
+        lastMessage?.role === "assistant" &&
+        lastMessage.content.includes("Raport został wygenerowany")
+      ) {
+        setThreadId(null);
+      }
     } catch (error) {
       console.error("Błąd podczas komunikacji z API:", error);
     } finally {
@@ -99,8 +108,8 @@ export default function Home() {
   };
 
   return (
-    <div className="h-screen w-screen bg-gray-50 dark:bg-gray-900">
-      <main className="w-full h-full flex flex-col bg-white dark:bg-gray-800">
+    <div className="h-screen w-screen flex justify-center items-center bg-gray-50 dark:bg-gray-900">
+      <main className="w-4/5 h-4/5 flex flex-col bg-white dark:bg-gray-800 rounded-xl">
         <header className="p-4 border-b dark:border-gray-700 shadow-sm">
           <h1 className="text-xl font-bold text-gray-800 dark:text-white">
             Bug Report Assistant
@@ -121,11 +130,22 @@ export default function Home() {
               <div
                 className={`${
                   msg.role === "user"
-                    ? "bg-blue-500 text-white"
-                    : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200"
-                } p-4 rounded-lg max-w-lg`}
+                    ? "bg-blue-500 text-white rounded-2xl"
+                    : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-2xl"
+                } ${
+                  msg.imageUrl
+                    ? "flex flex-col gap-2"
+                    : "p-4 rounded-lg max-w-lg"
+                }`}
               >
-                <p>{msg.content}</p>
+                {msg.imageUrl && (
+                  <img
+                    src={msg.imageUrl}
+                    alt="Załączony obraz"
+                    className="rounded-lg max-w-xs"
+                  />
+                )}
+                <ReactMarkdown>{msg.content}</ReactMarkdown>
               </div>
             </div>
           ))}

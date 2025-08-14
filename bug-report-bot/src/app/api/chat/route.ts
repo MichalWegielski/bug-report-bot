@@ -24,6 +24,22 @@ const AppState = Annotation.Root({
   additionalInfo: Annotation<string>({
     reducer: (x, y) => y,
   }),
+  screenshotAsked: Annotation<boolean>({
+    reducer: (x, y) => y,
+    default: () => false,
+  }),
+  screenshotDeclined: Annotation<boolean>({
+    reducer: (x, y) => y,
+    default: () => false,
+  }),
+  waitingForAdditional: Annotation<boolean>({
+    reducer: (x, y) => y,
+    default: () => false,
+  }),
+  additionalDeclined: Annotation<boolean>({
+    reducer: (x, y) => y,
+    default: () => false,
+  }),
 });
 
 const analyzeInitialPrompt = async (state: typeof AppState.State) => {
@@ -62,23 +78,56 @@ const askForScreenshotNode = async (state: typeof AppState.State) => {
 
   return {
     messages: [responseMessage],
+    screenshotAsked: true,
   };
+};
+
+const isNegativeResponse = async (msgContent: any): Promise<boolean> => {
+  if (typeof msgContent !== "string") return false;
+
+  const model = new ChatGoogleGenerativeAI({
+    model: "gemini-1.5-flash-latest",
+    temperature: 0,
+  });
+
+  const systemPrompt = new HumanMessage(
+    `You are a strict classifier. Answer with single word YES if the following user reply is a refusal/decline (meaning they don't want or don't have what was requested). Answer NO otherwise.`
+  );
+
+  const res = await model.invoke([systemPrompt, new HumanMessage(msgContent)]);
+  const ans = String(res.content).trim().toUpperCase();
+  return ans.startsWith("Y");
+};
+
+const messageHasImage = (msg: BaseMessage): boolean => {
+  return (
+    Array.isArray(msg.content) &&
+    (msg.content as any[]).some((part) => (part as any).type === "image_url")
+  );
 };
 
 const handleScreenshotResponseNode = async (state: typeof AppState.State) => {
   console.log("Węzeł: analizuje czy dostalem screenashota");
   const lastUserMessage = state.messages[state.messages.length - 1];
-  const hasImage =
-    Array.isArray(lastUserMessage.content) &&
-    lastUserMessage.content.some((part) => (part as any).type === "image_url");
+  const hasImage = messageHasImage(lastUserMessage);
 
   if (hasImage) {
     console.log("Użytkownik dostarczył screenshot.");
     return { imageProvided: true };
-  } else {
-    console.log("Użytkownik nie dostarczył screenshota.");
-    return {};
   }
+
+  if (await isNegativeResponse(lastUserMessage.content)) {
+    console.log("Użytkownik odmówił dostarczenia screena.");
+    return { screenshotDeclined: true };
+  }
+
+  console.log(
+    "Użytkownik nie dostarczył screena, ale napisał tekst. Traktuję to jako dodatkowe info."
+  );
+  return {
+    screenshotDeclined: true,
+    additionalInfo: String(lastUserMessage.content),
+  };
 };
 
 const askForFinalInfoNode = async (state: typeof AppState.State) => {
@@ -89,6 +138,7 @@ const askForFinalInfoNode = async (state: typeof AppState.State) => {
 
   return {
     messages: [responseMessage],
+    waitingForAdditional: true,
   };
 };
 
@@ -97,8 +147,19 @@ const handleFinalInfoNode = async (state: typeof AppState.State) => {
   const lastUserMessage = state.messages[state.messages.length - 1];
   const finalInfo = String(lastUserMessage.content);
   console.log("Dodatkowe informacje od użytkownika:", finalInfo);
+
+  if (await isNegativeResponse(finalInfo)) {
+    return {
+      additionalDeclined: true,
+      waitingForAdditional: false,
+    };
+  }
+
   return {
-    additionalInfo: finalInfo,
+    additionalInfo: [state.additionalInfo, finalInfo]
+      .filter(Boolean)
+      .join("\n"),
+    waitingForAdditional: false,
   };
 };
 
@@ -133,22 +194,66 @@ const generateReportNode = async (state: typeof AppState.State) => {
   console.log("Wygenerowany raport:", response.content);
 
   return {
-    messages: [new AIMessage({ content: String(response.content) })],
+    messages: [
+      new AIMessage({ content: String(response.content) }),
+      new AIMessage({
+        content:
+          "Raport został wygenerowany ✅\n\nCzy mogę pomóc w czymś jeszcze? Jeśli tak, po prostu napisz kolejny opis błędu, a rozpoczniemy nowy wątek.",
+      }),
+    ],
   };
 };
 
-const shouldAskForScreenshot = (state: typeof AppState.State) => {
-  console.log(
-    "Router decyduje na podstawie flagi imageProvided:",
-    state.imageProvided
-  );
-  if (state.imageProvided) {
-    console.log("Obraz dostarczony, przechodzę do końca (na razie).");
-    return "ask_for_final_info";
-  } else {
-    console.log("Brak obrazu, proszę o screenshot (na razie kończę).");
-    return "ask_for_screenshot";
+const masterRouter = (state: typeof AppState.State) => {
+  console.log("--- Master Router Deciding ---");
+  const {
+    initialDescription,
+    imageProvided,
+    screenshotAsked,
+    screenshotDeclined,
+    waitingForAdditional,
+    additionalInfo,
+    additionalDeclined,
+  } = state;
+
+  console.log("Current state:", {
+    initialDescription: !!initialDescription,
+    imageProvided,
+    screenshotAsked,
+    screenshotDeclined,
+    waitingForAdditional,
+    additionalInfo: !!additionalInfo,
+    additionalDeclined,
+  });
+
+  if (!initialDescription) {
+    console.log("Decision: initial_analyzer");
+    return "initial_analyzer";
   }
+
+  const screenshotPhaseOver = imageProvided || screenshotDeclined;
+
+  if (screenshotAsked && !screenshotPhaseOver) {
+    console.log("Decision: handle_screenshot_response");
+    return "handle_screenshot_response";
+  }
+
+  if (screenshotPhaseOver) {
+    const finalInfoPhaseOver = additionalInfo || additionalDeclined;
+    if (finalInfoPhaseOver) {
+      console.log("Decision: generate_report");
+      return "generate_report";
+    }
+    if (waitingForAdditional) {
+      console.log("Decision: handle_final_info");
+      return "handle_final_info";
+    }
+    console.log("Decision: ask_for_final_info");
+    return "ask_for_final_info";
+  }
+
+  console.log("Router fallback to ask_for_screenshot");
+  return "ask_for_screenshot";
 };
 
 const app = new StateGraph(AppState)
@@ -158,15 +263,10 @@ const app = new StateGraph(AppState)
   .addNode("ask_for_final_info", askForFinalInfoNode)
   .addNode("handle_final_info", handleFinalInfoNode)
   .addNode("generate_report", generateReportNode)
-  .addEdge(START, "initial_analyzer")
-  .addConditionalEdges("initial_analyzer", shouldAskForScreenshot, {
-    ask_for_screenshot: "ask_for_screenshot",
-    ask_for_final_info: "ask_for_final_info",
-  })
-  .addEdge("ask_for_screenshot", "handle_screenshot_response")
-  .addEdge("handle_screenshot_response", "ask_for_final_info")
-  .addEdge("ask_for_final_info", "handle_final_info")
-  .addEdge("handle_final_info", "generate_report")
+  .addConditionalEdges(START, masterRouter)
+  .addConditionalEdges("initial_analyzer", masterRouter)
+  .addConditionalEdges("handle_screenshot_response", masterRouter)
+  .addConditionalEdges("handle_final_info", masterRouter)
   .addEdge("generate_report", END)
   .compile({
     interruptAfter: ["ask_for_screenshot", "ask_for_final_info"],
@@ -178,10 +278,6 @@ export async function POST(req: Request) {
     const formData = await req.formData();
     const text = (formData.get("text") as string) || "";
     const imageFile = formData.get("image") as File | null;
-    const previousMessagesString = formData.get("messages") as string;
-    const previousMessages = previousMessagesString
-      ? JSON.parse(previousMessagesString)
-      : [];
     let threadId = formData.get("threadId") as string | null;
 
     if (!threadId) {
@@ -211,10 +307,41 @@ export async function POST(req: Request) {
     );
 
     const formattedResult = {
-      messages: result.messages.map((msg: BaseMessage) => ({
-        role: msg instanceof HumanMessage ? "user" : "assistant",
-        content: String(msg.content),
-      })),
+      messages: result.messages.map((msg: BaseMessage) => {
+        let textContent = "";
+        let imageUrl: string | undefined = undefined;
+
+        if (Array.isArray(msg.content)) {
+          const textParts = msg.content.filter(
+            (part) => (part as any).type === "text"
+          );
+          const imageParts = msg.content.filter(
+            (part) => (part as any).type === "image_url"
+          );
+
+          textContent = textParts.map((part: any) => part.text).join("\n");
+
+          if (imageParts.length > 0) {
+            const imagePart = imageParts[0] as any;
+            if (typeof imagePart.image_url === "string") {
+              imageUrl = imagePart.image_url;
+            } else if (
+              typeof imagePart.image_url === "object" &&
+              imagePart.image_url !== null
+            ) {
+              imageUrl = imagePart.image_url.url;
+            }
+          }
+        } else {
+          textContent = String(msg.content);
+        }
+
+        return {
+          role: msg instanceof HumanMessage ? "user" : "assistant",
+          content: textContent,
+          imageUrl: imageUrl,
+        };
+      }),
       threadId: threadId,
     };
     return NextResponse.json(formattedResult);
