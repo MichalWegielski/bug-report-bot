@@ -212,28 +212,87 @@ const generateReportNode = async (state: typeof AppState.State) => {
     state;
 
   const reportPrompt = `
-    Wygeneruj zwięzły i dobrze sformatowany raport błędu na podstawie poniższych informacji. Użyj markdown.
+    Jesteś doświadczonym analitykiem QA. Twoim zadaniem jest przekształcenie poniższych, luźnych notatek od użytkownika w profesjonalny, ustrukturyzowany raport błędu w formacie Markdown.
+    
+    **Twoje zadania:**
+    1.  **Stwórz zwięzły, techniczny tytuł** na podstawie opisu problemu.
+    2.  **Wypełnij sekcje raportu** na podstawie dostępnych danych.
+    3.  Jeśli jakaś informacja nie została podana (np. URL, dokładne kroki), **zostaw w tym miejscu adnotację**, np. "[URL do uzupełnienia przez zespół]". Nie wymyślaj danych.
+    4.  Dokonaj **krótkiej, technicznej analizy** problemu w sekcji "Dodatkowe informacje i analiza", bazując na wszystkich dostępnych informacjach (w tym analizie obrazu, jeśli istnieje).
+    5.  Zachowaj DOKŁADNIE strukturę i formatowanie z poniższego szablonu. Zwróć szczególną uwagę, aby **przed i po każdej linii \`---\` znajdowała się pusta linia (enter)**. To kluczowe dla czytelności raportu.
 
-    **Opis problemu:**
-    ${initialDescription}
+    **Dane wejściowe od użytkownika:**
+    -   **Początkowy opis:** ${initialDescription}
+    -   **Analiza obrazu (jeśli jest):** ${imageAnalysis || "Brak"}
+    -   **Dodatkowe informacje:** ${additionalInfo || "Brak"}
 
-    **Czy załączono zrzut ekranu?**
-    ${imageProvided ? "Tak" : "Nie"}
+    **Szablon raportu do wypełnienia:**
 
-    ${imageAnalysis ? `**Analiza zrzutu ekranu:**\n${imageAnalysis}` : ""}
+    **Tytuł:** [Twój wygenerowany tytuł]
 
-    **Dodatkowe informacje od użytkownika:**
-    ${additionalInfo || "Brak."}
+    ---
 
-    Raport powinien być gotowy do przekazania zespołowi deweloperskiemu.
-  `;
+    **Środowisko:**
+    -   **URL:** [URL do uzupełnienia przez zespół]
+    -   **Przeglądarka:** [Do uzupełnienia na podstawie informacji od użytkownika, jeśli dostępne]
+    -   **System operacyjny:** [Do uzupełnienia na podstawie informacji od użytkownika, jeśli dostępne]
+    -   **Dodatkowe uwagi:** [Jeśli użytkownik podał, np. "Nie występuje w Firefox"]
+
+    ---
+
+    **Kroki do odtworzenia:**
+    1.  [Krok 1 do uzupełnienia na podstawie opisu]
+    2.  [Krok 2 do uzupełnienia na podstawie opisu]
+    3.  ...
+
+    ---
+
+    **Oczekiwany rezultat:**
+    [Opisz, jak powinno to działać, na podstawie opisu problemu]
+
+    ---
+
+    **Rzeczywisty rezultat:**
+    [Opisz, co się faktycznie stało, na podstawie opisu problemu]
+
+    ---
+
+    **Dodatkowe informacje i analiza:**
+    [Twoja techniczna analiza problemu]
+
+    ---
+
+    **Załączniki:**
+    ${imageProvided ? "{{IMAGE_PLACEHOLDER}}" : "Brak załączników."}
+    `;
 
   const response = await model.invoke([new HumanMessage(reportPrompt)]);
-  console.log("Wygenerowany raport:", response.content);
+  const reportContent = String(response.content).trim();
+  console.log("Wygenerowany raport:", reportContent);
+
+  const userImageMessage = state.messages.find(messageHasImage);
+  let imageUrl: string | undefined;
+
+  if (userImageMessage && Array.isArray(userImageMessage.content)) {
+    const imagePart = userImageMessage.content.find(
+      (part) => (part as any).type === "image_url"
+    ) as any;
+    if (imagePart?.image_url?.url) {
+      imageUrl = imagePart.image_url.url;
+    }
+  }
+
+  const reportMessageContent: any = [{ type: "text", text: reportContent }];
+  if (imageUrl) {
+    reportMessageContent.push({
+      type: "image_url",
+      image_url: { url: imageUrl },
+    });
+  }
 
   return {
     messages: [
-      new AIMessage({ content: String(response.content) }),
+      new AIMessage({ content: reportMessageContent }),
       new AIMessage({
         content:
           "Raport został wygenerowany ✅\n\nCzy mogę pomóc w czymś jeszcze? Jeśli tak, po prostu napisz kolejny opis błędu, a rozpoczniemy nowy wątek.",
@@ -253,6 +312,8 @@ const repromptNode = async (state: typeof AppState.State) => {
   const answerBadQualityPrompt = new HumanMessage(
     `Odpowiedz tutaj grzecznie, na to ze nie podane informacje sa nie wystraczające lub niezrozumiałe. 
     Poproś o opisanie problemu jeszcze raz, podając więcej szczegółów. Odpowiedz w max 2 zdaniach i z kazdą nastepną wiadomością innymi słowami.
+    Odpowiedz w stylu "Przepraszam, nie zrozumiałem. Możesz opisać problem jeszcze raz? Dane które podałeś nie są wystarczające, lub nie zrozumiałe"
+    Odpowiedz tak ale swoimi slowami.
     `
   );
 

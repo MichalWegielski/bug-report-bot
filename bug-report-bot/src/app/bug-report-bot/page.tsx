@@ -126,31 +126,46 @@ export default function Home() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {messages.map((msg, index) => (
-            <div
-              key={index}
-              className={`flex items-start gap-3 ${
-                msg.role === "user" ? "justify-end" : "justify-start"
-              }`}
-            >
+          {messages.map((msg, index) => {
+            const contentParts = msg.content.split("{{IMAGE_PLACEHOLDER}}");
+            const textPart = contentParts[0];
+            const hasImagePlaceholder = contentParts.length > 1;
+
+            return (
               <div
-                className={`${
-                  msg.role === "user"
-                    ? "bg-blue-500 text-white rounded-2xl"
-                    : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-2xl"
-                } p-4 max-w-lg`}
+                key={index}
+                className={`flex items-start gap-3 ${
+                  msg.role === "user" ? "justify-end" : "justify-start"
+                }`}
               >
-                {msg.imageUrl && (
-                  <img
-                    src={msg.imageUrl}
-                    alt="Załączony obraz"
-                    className="rounded-lg max-w-xs"
-                  />
-                )}
-                <ReactMarkdown>{msg.content}</ReactMarkdown>
+                <div
+                  className={`${
+                    msg.role === "user"
+                      ? "bg-blue-500 text-white rounded-2xl"
+                      : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-2xl"
+                  } p-4 max-w-lg`}
+                >
+                  <ReactMarkdown>{textPart}</ReactMarkdown>
+                  {hasImagePlaceholder && msg.imageUrl && (
+                    <img
+                      src={msg.imageUrl}
+                      alt="Załączony obraz"
+                      className="rounded-lg max-w-xs mt-2"
+                    />
+                  )}
+                  {msg.imageUrl &&
+                    !hasImagePlaceholder &&
+                    msg.role !== "assistant" && (
+                      <img
+                        src={msg.imageUrl}
+                        alt="Załączony obraz"
+                        className="rounded-lg max-w-xs mt-2"
+                      />
+                    )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           <div ref={messagesEndRef} />
         </div>
 
