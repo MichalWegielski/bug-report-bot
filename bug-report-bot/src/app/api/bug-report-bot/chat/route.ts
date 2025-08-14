@@ -156,10 +156,34 @@ const handleFinalInfoNode = async (state: typeof AppState.State) => {
   }
 
   return {
-    additionalInfo: [state.additionalInfo, finalInfo]
-      .filter(Boolean)
-      .join("\n"),
     waitingForAdditional: false,
+  };
+};
+
+const analyzeAdditionalInfoNode = async (state: typeof AppState.State) => {
+  console.log("Węzeł: analizuję dodatkowe informacje (w tym obraz).");
+  const model = new ChatGoogleGenerativeAI({
+    model: "gemini-1.5-flash-latest",
+    temperature: 0,
+  });
+
+  const lastUserMessage = state.messages[state.messages.length - 1];
+  const analysisPrompt = new HumanMessage(
+    "Przeanalizuj poniższą, dodatkową wiadomość (może zawierać tekst i/lub obraz) i streść zawarte w niej informacje w kontekście zgłoszenia błędu."
+  );
+
+  const response = await model.invoke([analysisPrompt, lastUserMessage]);
+  const analyzedInfo = String(response.content);
+  console.log("Przeanalizowane dodatkowe info:", analyzedInfo);
+
+  const hasImage = messageHasImage(lastUserMessage);
+
+  return {
+    additionalInfo: [state.additionalInfo, analyzedInfo]
+      .filter(Boolean)
+      .join("\n\n"),
+    waitingForAdditional: false,
+    imageProvided: state.imageProvided || hasImage,
   };
 };
 
@@ -262,11 +286,18 @@ const app = new StateGraph(AppState)
   .addNode("handle_screenshot_response", handleScreenshotResponseNode)
   .addNode("ask_for_final_info", askForFinalInfoNode)
   .addNode("handle_final_info", handleFinalInfoNode)
+  .addNode("analyze_additional_info", analyzeAdditionalInfoNode)
   .addNode("generate_report", generateReportNode)
   .addConditionalEdges(START, masterRouter)
   .addConditionalEdges("initial_analyzer", masterRouter)
   .addConditionalEdges("handle_screenshot_response", masterRouter)
-  .addConditionalEdges("handle_final_info", masterRouter)
+  .addConditionalEdges("handle_final_info", (state) => {
+    if (state.additionalDeclined) {
+      return "generate_report";
+    }
+    return "analyze_additional_info";
+  })
+  .addEdge("analyze_additional_info", "generate_report")
   .addEdge("generate_report", END)
   .compile({
     interruptAfter: ["ask_for_screenshot", "ask_for_final_info"],
