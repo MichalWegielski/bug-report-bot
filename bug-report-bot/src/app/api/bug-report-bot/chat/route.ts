@@ -40,10 +40,13 @@ const AppState = Annotation.Root({
     reducer: (x, y) => y,
     default: () => false,
   }),
+  initialAnalysisQuality: Annotation<"good" | "bad">({
+    reducer: (x, y) => y,
+  }),
 });
 
 const analyzeInitialPrompt = async (state: typeof AppState.State) => {
-  console.log("Analizuję pierwsze zapytanie...");
+  console.log("Analizuję pierwsze zapytanie (z oceną jakości)...");
 
   const model = new ChatGoogleGenerativeAI({
     model: "gemini-1.5-flash-latest",
@@ -52,21 +55,32 @@ const analyzeInitialPrompt = async (state: typeof AppState.State) => {
 
   const lastUserMessage = state.messages[state.messages.length - 1];
 
-  const hasImage =
-    Array.isArray(lastUserMessage.content) &&
-    lastUserMessage.content.some((part) => (part as any).type === "image_url");
-
   const analysisPrompt = new HumanMessage(
-    "Przeanalizuj poniższe zgłoszenie błędu. Zidentyfikuj i opisz krótko problem. Jeśli jest załączony obraz, opisz co na nim widać w kontekście zgłoszenia."
+    `You are a QA assistant. Your task is to assess the quality of the first bug report description from a user.
+1.  Assess: Does the description contain any meaningful information that could relate to a software problem? Ignore greetings. Respond with a single word: 'GOOD' or 'BAD'.
+2.  Summarize: If the assessment is 'GOOD', provide a brief summary of the problem. If 'BAD', do not create a summary.
+
+Format your response as follows:
+Assessment: [GOOD or BAD]
+Summary: [Your summary here, or leave empty if BAD]`
   );
 
   const response = await model.invoke([analysisPrompt, lastUserMessage]);
+  const responseText = String(response.content);
+  console.log("Odpowiedź analityczna modelu:", responseText);
 
-  console.log("Odpowiedź analityczna modelu:", response.content);
+  const assessmentMatch = responseText.match(/Assessment: (GOOD|BAD)/);
+  const summaryMatch = responseText.match(/Summary: (.*)/);
+
+  const quality =
+    assessmentMatch && assessmentMatch[1] === "GOOD" ? "good" : "bad";
+  const summary = summaryMatch ? summaryMatch[1].trim() : "";
+  const hasImage = messageHasImage(lastUserMessage);
 
   return {
-    initialDescription: String(response.content),
+    initialDescription: summary,
     imageProvided: hasImage,
+    initialAnalysisQuality: quality,
   };
 };
 
@@ -228,6 +242,30 @@ const generateReportNode = async (state: typeof AppState.State) => {
   };
 };
 
+const repromptNode = async (state: typeof AppState.State) => {
+  console.log("Węzeł: proszę o lepszy opis.");
+
+  const model = new ChatGoogleGenerativeAI({
+    model: "gemini-1.5-flash-latest",
+    temperature: 0,
+  });
+
+  const answerBadQualityPrompt = new HumanMessage(
+    `Odpowiedz tutaj grzecznie, na to ze nie podane informacje sa nie wystraczające lub niezrozumiałe. 
+    Poproś o opisanie problemu jeszcze raz, podając więcej szczegółów. Odpowiedz w max 2 zdaniach i z kazdą nastepną wiadomością innymi słowami.
+    `
+  );
+
+  const response = await model.invoke([answerBadQualityPrompt]);
+  const responseText = String(response.content);
+
+  const responseMessage = new AIMessage({ content: responseText });
+
+  return {
+    messages: [responseMessage],
+  };
+};
+
 const masterRouter = (state: typeof AppState.State) => {
   console.log("--- Master Router Deciding ---");
   const {
@@ -242,6 +280,7 @@ const masterRouter = (state: typeof AppState.State) => {
 
   console.log("Current state:", {
     initialDescription: !!initialDescription,
+    initialAnalysisQuality: state.initialAnalysisQuality,
     imageProvided,
     screenshotAsked,
     screenshotDeclined,
@@ -252,6 +291,11 @@ const masterRouter = (state: typeof AppState.State) => {
 
   if (!initialDescription) {
     console.log("Decision: initial_analyzer");
+    return "initial_analyzer";
+  }
+
+  if (state.initialAnalysisQuality === "bad") {
+    console.log("Decision: initial_analyzer (re-prompt loop)");
     return "initial_analyzer";
   }
 
@@ -287,9 +331,15 @@ const app = new StateGraph(AppState)
   .addNode("ask_for_final_info", askForFinalInfoNode)
   .addNode("handle_final_info", handleFinalInfoNode)
   .addNode("analyze_additional_info", analyzeAdditionalInfoNode)
+  .addNode("reprompt_node", repromptNode)
   .addNode("generate_report", generateReportNode)
   .addConditionalEdges(START, masterRouter)
-  .addConditionalEdges("initial_analyzer", masterRouter)
+  .addConditionalEdges("initial_analyzer", (state) => {
+    if (state.initialAnalysisQuality === "good") {
+      return masterRouter(state);
+    }
+    return "reprompt_node";
+  })
   .addConditionalEdges("handle_screenshot_response", masterRouter)
   .addConditionalEdges("handle_final_info", (state) => {
     if (state.additionalDeclined) {
@@ -297,10 +347,15 @@ const app = new StateGraph(AppState)
     }
     return "analyze_additional_info";
   })
+  .addConditionalEdges("reprompt_node", masterRouter)
   .addEdge("analyze_additional_info", "generate_report")
   .addEdge("generate_report", END)
   .compile({
-    interruptAfter: ["ask_for_screenshot", "ask_for_final_info"],
+    interruptAfter: [
+      "ask_for_screenshot",
+      "ask_for_final_info",
+      "reprompt_node",
+    ],
     checkpointer: memory,
   });
 
