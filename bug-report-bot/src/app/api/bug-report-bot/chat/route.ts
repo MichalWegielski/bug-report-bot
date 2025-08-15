@@ -306,18 +306,18 @@ const repromptNode = async (state: typeof AppState.State) => {
 
   const model = new ChatGoogleGenerativeAI({
     model: "gemini-1.5-flash-latest",
-    temperature: 0,
+    temperature: 0.7,
   });
 
+  const history = state.messages;
+
   const answerBadQualityPrompt = new HumanMessage(
-    `Odpowiedz tutaj grzecznie, na to ze nie podane informacje sa nie wystraczające lub niezrozumiałe. 
-    Poproś o opisanie problemu jeszcze raz, podając więcej szczegółów. Odpowiedz w max 2 zdaniach i z kazdą nastepną wiadomością innymi słowami.
-    Odpowiedz w stylu "Przepraszam, nie zrozumiałem. Możesz opisać problem jeszcze raz? Dane które podałeś nie są wystarczające, lub nie zrozumiałe"
-    Odpowiedz tak ale swoimi slowami.
-    `
+    `Jesteś asystentem AI. Twoim zadaniem jest grzeczne poinformowanie użytkownika, że jego ostatnia wiadomość jest niewystarczająca lub niezrozumiała do stworzenia raportu błędu. Poproś o więcej szczegółów. 
+    Przeanalizuj historię rozmowy, aby zobaczyć, co już zostało powiedziane i sformułuj prośbę inaczej niż poprzednio.
+    Odpowiedz krótko (maksymalnie 2 zdania), po polsku, w uprzejmym tonie.`
   );
 
-  const response = await model.invoke([answerBadQualityPrompt]);
+  const response = await model.invoke([...history, answerBadQualityPrompt]);
   const responseText = String(response.content);
 
   const responseMessage = new AIMessage({ content: responseText });
