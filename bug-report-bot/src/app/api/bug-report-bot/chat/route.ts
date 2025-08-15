@@ -3,10 +3,10 @@ import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { BaseMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
-import { z } from "zod";
 import { InitialAnalysisSchema } from "./schemas/initial-analysis.schema";
 import { FinalInfoQualitySchema } from "./schemas/final-info-quality.schema";
 import { ReportSchema } from "./schemas/report.schema";
+import { ScreenshotTriageSchema } from "./schemas/screenshot-triage.schema";
 
 const memory = new MemorySaver();
 
@@ -53,6 +53,11 @@ const AppState = Annotation.Root({
   additionalDeclined: Annotation<boolean>({
     reducer: (x, y) => y,
     default: () => false,
+  }),
+  screenshotTriageResult: Annotation<
+    "NEGATIVE" | "AFFIRMATIVE" | "ADDITIONAL_INFO" | "UNCLEAR"
+  >({
+    reducer: (x, y) => y,
   }),
   initialAnalysisQuality: Annotation<"good" | "bad">({
     reducer: (x, y) => y,
@@ -153,8 +158,8 @@ const messageHasImage = (msg: BaseMessage): boolean => {
   );
 };
 
-const handleScreenshotResponseNode = async (state: typeof AppState.State) => {
-  console.log("Węzeł: analizuje czy dostalem screenashota");
+const triageScreenshotResponseNode = async (state: typeof AppState.State) => {
+  console.log("Węzeł: analizuje odpowiedź dot. screenshota...");
   const lastUserMessage = state.messages[state.messages.length - 1];
   const hasImage = messageHasImage(lastUserMessage);
 
@@ -163,25 +168,71 @@ const handleScreenshotResponseNode = async (state: typeof AppState.State) => {
     return { imageProvided: true };
   }
 
-  if (await isNegativeResponse(lastUserMessage.content)) {
-    console.log("Użytkownik odmówił dostarczenia screena.");
-    return { screenshotDeclined: true };
-  }
+  console.log("Brak obrazu. Używam AI do analizy odpowiedzi tekstowej.");
 
-  console.log(
-    "Użytkownik nie dostarczył screena, ale napisał tekst. Traktuję to jako dodatkowe info."
+  const triagePrompt = new HumanMessage(
+    `You are a conversation analyst. The user was asked if they have a screenshot. Analyze their text response. Classify it into one of four categories:
+- NEGATIVE: The user clearly states they don't have a screenshot or don't want to provide one (e.g., "no", "I don't have one", "skip this").
+- AFFIRMATIVE: The user says they have a screenshot but hasn't attached it yet (e.g., "yes", "sure", "I do").
+- ADDITIONAL_INFO: The user provides relevant information about the bug instead of answering the screenshot question directly.
+- UNCLEAR: The response is gibberish, unrelated, or too ambiguous to categorize.
+
+Also, provide a one-sentence summary of the user's message.
+
+Respond with a JSON object with two keys: "classification" (one of the four categories) and "summary" (a string).
+Example for additional info: {"classification": "ADDITIONAL_INFO", "summary": "The user mentioned that the error appears after clicking the checkout button."}
+Example for affirmative: {"classification": "AFFIRMATIVE", "summary": "The user confirmed they have a screenshot."}`
   );
-  return {
-    screenshotDeclined: true,
-    additionalInfo: String(lastUserMessage.content),
-  };
+
+  const response = await analyticalModel.invoke([
+    triagePrompt,
+    lastUserMessage,
+  ]);
+  const responseText = String(response.content)
+    .replace(/```json|```/g, "")
+    .trim();
+
+  try {
+    const parsedJson = JSON.parse(responseText);
+    const validatedData = ScreenshotTriageSchema.parse(parsedJson);
+    const { classification, summary } = validatedData;
+    console.log("Wynik analizy odpowiedzi:", classification);
+
+    if (classification === "ADDITIONAL_INFO") {
+      return {
+        screenshotDeclined: true,
+        additionalInfo: summary,
+        screenshotTriageResult: classification,
+      };
+    }
+
+    return {
+      screenshotDeclined: true,
+      screenshotTriageResult: classification,
+    };
+  } catch (e) {
+    console.error(
+      "Błąd parsowania lub walidacji JSON przy analizie odpowiedzi o screenshot:",
+      e
+    );
+    return {
+      screenshotDeclined: true,
+      screenshotTriageResult: "UNCLEAR",
+    };
+  }
 };
 
 const askForFinalInfoNode = async (state: typeof AppState.State) => {
   console.log("Węzeł: proszę o dodatkowe informacje.");
-  const responseMessage = new AIMessage(
-    "Świetnie, mam już prawie wszystko. Czy chcesz dodać jeszcze jakieś informacje, zanim wygeneruję raport?"
-  );
+  let messageText =
+    "Świetnie, mam już prawie wszystko. Czy chcesz dodać jeszcze jakieś informacje, zanim wygeneruję raport?";
+
+  if (state.screenshotTriageResult === "AFFIRMATIVE") {
+    messageText =
+      "Super, w takim razie załącz go tutaj. Mam już prawie wszystko. Czy chcesz dodać jeszcze jakieś informacje, zanim wygeneruję raport?";
+  }
+
+  const responseMessage = new AIMessage(messageText);
 
   return {
     messages: [responseMessage],
@@ -469,16 +520,11 @@ const masterRouter = (state: typeof AppState.State) => {
   const screenshotPhaseOver = imageProvided || screenshotDeclined;
 
   if (screenshotAsked && !screenshotPhaseOver) {
-    console.log("Decision: handle_screenshot_response");
-    return "handle_screenshot_response";
+    console.log("Decision: triage_screenshot_response");
+    return "triage_screenshot_response";
   }
 
   if (screenshotPhaseOver) {
-    const finalInfoPhaseOver = additionalInfo || additionalDeclined;
-    if (finalInfoPhaseOver) {
-      console.log("Decision: generate_report");
-      return "generate_report";
-    }
     if (waitingForAdditional) {
       console.log("Decision: triage_final_info_node");
       return "triage_final_info_node";
@@ -494,7 +540,7 @@ const masterRouter = (state: typeof AppState.State) => {
 const app = new StateGraph(AppState)
   .addNode("initial_analyzer", analyzeInitialPrompt)
   .addNode("ask_for_screenshot", askForScreenshotNode)
-  .addNode("handle_screenshot_response", handleScreenshotResponseNode)
+  .addNode("triage_screenshot_response", triageScreenshotResponseNode)
   .addNode("ask_for_final_info", askForFinalInfoNode)
   .addNode("triage_final_info_node", triage_final_info_node)
   .addNode("finalinfo_clarification_node", finalinfo_clarification_node)
@@ -508,7 +554,7 @@ const app = new StateGraph(AppState)
     }
     return "reprompt_node";
   })
-  .addConditionalEdges("handle_screenshot_response", masterRouter)
+  .addConditionalEdges("triage_screenshot_response", masterRouter)
   .addConditionalEdges("triage_final_info_node", (state) => {
     switch (state.finalInfoQuality) {
       case "POSITIVE":
