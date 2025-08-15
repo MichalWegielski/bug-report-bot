@@ -331,28 +331,28 @@ const generateReportNode = async (state: typeof AppState.State) => {
   const imageCount = userImageMessages.length;
 
   const reportPrompt = `
-    Jesteś doświadczonym analitykiem QA. Twoim zadaniem jest przekształcenie poniższych, luźnych notatek od użytkownika w profesjonalny, ustrukturyzowany raport błędu w formacie JSON.
+    Jesteś wybitnym analitykiem QA z talentem do tworzenia niezwykle szczegółowych i wnikliwych raportów. Twoim zadaniem jest przekształcenie poniższych, luźnych notatek od użytkownika w profesjonalny, ustrukturyzowany raport błędu w formacie JSON, **całkowicie w języku polskim**.
     
     **Twoje zadania:**
-    1.  **Stwórz zwięzły, techniczny tytuł**.
-    2.  **Wypełnij pola obiektu JSON** na podstawie dostępnych danych.
+    1.  **Stwórz kreatywny, ale technicznie precyzyjny polski tytuł**.
+    2.  **Wypełnij szczegółowo wszystkie pola obiektu JSON** na podstawie dostępnych danych. Bądź jak najbardziej wylewny i dokładny w opisach.
     3.  Jeśli jakaś informacja nie została podana (np. URL, dokładne kroki), **pozostaw to pole jako puste lub pomiń je**, zgodnie ze schematem. Nie wymyślaj danych.
-    4.  Dokonaj **krótkiej, technicznej analizy** w polu "technicalAnalysis".
+    4.  W polu "technicalAnalysis" **dokonaj obszernej, kreatywnej i technicznej analizy problemu w języku polskim**. Spekuluj na temat możliwych przyczyn, sugeruj obszary do zbadania w kodzie, wskaż potencjalne konsekwencje błędu. Twoja analiza powinna być gwiazdą tego raportu.
 
     **Dane wejściowe od użytkownika:**
     -   **Początkowy opis:** ${initialDescription}
     -   **Analiza obrazu (jeśli jest):** ${imageAnalysis || "Brak"}
     -   **Dodatkowe informacje:** ${additionalInfo || "Brak"}
 
-    **Schemat JSON, którego musisz przestrzegać:**
+    **Schemat JSON, którego musisz bezwzględnie przestrzegać:**
     \`\`\`json
     {
-      "title": "string",
+      "title": "string (po polsku)",
       "environment": { "url": "string", "browser": "string", "os": "string" },
-      "stepsToReproduce": ["string"],
-      "expectedResult": "string",
-      "actualResult": "string",
-      "technicalAnalysis": "string"
+      "stepsToReproduce": ["string (każdy krok po polsku)"],
+      "expectedResult": "string (po polsku)",
+      "actualResult": "string (po polsku)",
+      "technicalAnalysis": "string (obszerna analiza po polsku)"
     }
     \`\`\`
     
@@ -370,55 +370,29 @@ const generateReportNode = async (state: typeof AppState.State) => {
     const parsedJson = JSON.parse(responseText);
     const validatedReport = ReportSchema.parse(parsedJson);
 
-    const markdownReport = `
-**Tytuł:** ${validatedReport.title}
-
----
-
-**Środowisko:**
--   **URL:** ${
+    const markdownReport = `**Tytuł:** ${
+      validatedReport.title
+    }\n\n---\n\n**Środowisko:**\n-   **URL:** ${
       validatedReport.environment?.url || "[URL do uzupełnienia przez zespół]"
-    }
--   **Przeglądarka:** ${
+    }\n-   **Przeglądarka:** ${
       validatedReport.environment?.browser ||
       "[Do uzupełnienia na podstawie informacji od użytkownika, jeśli dostępne]"
-    }
--   **System operacyjny:** ${
+    }\n-   **System operacyjny:** ${
       validatedReport.environment?.os ||
       "[Do uzupełnienia na podstawie informacji od użytkownika, jeśli dostępne]"
-    }
-
----
-
-**Kroki do odtworzenia:**
-${validatedReport.stepsToReproduce
-  .map((step, i) => `${i + 1}. ${step}`)
-  .join("\n")}
-
----
-
-**Oczekiwany rezultat:**
-${validatedReport.expectedResult}
-
----
-
-**Rzeczywisty rezultat:**
-${validatedReport.actualResult}
-
----
-
-**Dodatkowe informacje i analiza:**
-${validatedReport.technicalAnalysis}
-
----
-
-**Załączniki:**
-${
-  imageCount > 0
-    ? `Liczba załączników: ${imageCount}. Znajdziesz je dołączone do tej wiadomości.`
-    : "Brak załączników."
-}
-    `;
+    }\n\n---\n\n**Kroki do odtworzenia:**\n${validatedReport.stepsToReproduce
+      .map((step, i) => `${i + 1}. ${step}`)
+      .join("\n")}\n\n---\n\n**Oczekiwany rezultat:**\n${
+      validatedReport.expectedResult
+    }\n\n---\n\n**Rzeczywisty rezultat:**\n${
+      validatedReport.actualResult
+    }\n\n---\n\n**Dodatkowe informacje i analiza:**\n${
+      validatedReport.technicalAnalysis
+    }\n\n---\n\n**Załączniki:**\n${
+      imageCount > 0
+        ? `Liczba załączników: ${imageCount}. Znajdziesz je dołączone do tej wiadomości.`
+        : "Brak załączników."
+    }`;
     reportContent = markdownReport.trim();
   } catch (e) {
     console.error("Błąd parsowania lub walidacji JSON raportu:", e);

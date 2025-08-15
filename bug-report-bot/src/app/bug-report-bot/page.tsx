@@ -182,7 +182,7 @@ export default function Home() {
                           ? "bg-red-100 dark:bg-red-900/50 border border-red-500/50 text-red-800 dark:text-red-200 rounded-2xl"
                           : msg.role === "user"
                           ? "bg-blue-500 text-white rounded-2xl"
-                          : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-2xl"
+                          : "prose dark:prose-invert rounded-2xl bg-gray-200 p-4 text-gray-800 dark:bg-gray-700 dark:text-gray-200"
                       } p-4 max-w-lg`}
                     >
                       {msg.isError && (
