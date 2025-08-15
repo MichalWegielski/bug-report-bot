@@ -17,7 +17,7 @@ export default function Home() {
     {
       role: "assistant",
       content:
-        "Witaj! Jestem tu, aby pomóc Ci stworzyć zgłoszenie błędu. Opisz problem, który napotkałeś. Możesz też od razu załączyć zrzut ekranu.",
+        "Jestem tu, aby pomóc Ci stworzyć zgłoszenie błędu. Opisz problem, który napotkałeś, lub od razu załącz zrzut ekranu, aby rozpocząć.",
     },
   ]);
   const [input, setInput] = useState<string>("");
@@ -130,39 +130,65 @@ export default function Home() {
           </p>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          {messages.map((msg, index) => {
-            return (
-              <div
-                key={index}
-                className={`flex items-start gap-3 ${
-                  msg.role === "user" ? "justify-end" : "justify-start"
-                }`}
-              >
-                <div
-                  className={`${
-                    msg.role === "user"
-                      ? "bg-blue-500 text-white rounded-2xl"
-                      : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-2xl"
-                  } p-4 max-w-lg`}
+        <div
+          className={`flex-1 overflow-y-auto p-6 ${
+            messages.length > 1 ? "space-y-6" : "flex flex-col"
+          }`}
+        >
+          {messages.length === 1 ? (
+            <div className="flex-1 flex justify-center items-center">
+              <div className="text-center max-w-md">
+                <h2
+                  className="text-2xl font-bold bg-clip-text text-transparent"
+                  style={{
+                    backgroundImage:
+                      "linear-gradient(to right, #ff69b4 40%, #ff8c00 60%)",
+                  }}
                 >
-                  {msg.content && <ReactMarkdown>{msg.content}</ReactMarkdown>}
-                  {msg.imageUrls && msg.imageUrls.length > 0 && (
-                    <div className="mt-2 flex flex-col gap-2">
-                      {msg.imageUrls.map((url, i) => (
-                        <img
-                          key={i}
-                          src={url}
-                          alt={`Załączony obraz ${i + 1}`}
-                          className="rounded-lg max-w-xs"
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
+                  Bug Report Assistant
+                </h2>
+                <p className="mt-2 text-gray-500 dark:text-gray-400">
+                  {messages[0].content}
+                </p>
               </div>
-            );
-          })}
+            </div>
+          ) : (
+            messages.map(
+              (msg, index) =>
+                index > 0 && (
+                  <div
+                    key={index}
+                    className={`flex items-start gap-3 ${
+                      msg.role === "user" ? "justify-end" : "justify-start"
+                    }`}
+                  >
+                    <div
+                      className={`${
+                        msg.role === "user"
+                          ? "bg-blue-500 text-white rounded-2xl"
+                          : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-2xl"
+                      } p-4 max-w-lg`}
+                    >
+                      {msg.content && (
+                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      )}
+                      {msg.imageUrls && msg.imageUrls.length > 0 && (
+                        <div className="mt-2 flex flex-col gap-2">
+                          {msg.imageUrls.map((url, i) => (
+                            <img
+                              key={i}
+                              src={url}
+                              alt={`Załączony obraz ${i + 1}`}
+                              className="rounded-lg max-w-xs"
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+            )
+          )}
           {isLoading && <Spinner />}
           <div ref={messagesEndRef} />
         </div>
