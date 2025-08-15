@@ -53,15 +53,15 @@ const analyzeInitialPrompt = async (state: typeof AppState.State) => {
 
   const model = new ChatGoogleGenerativeAI({
     model: "gemini-1.5-flash-latest",
-    temperature: 0,
+    temperature: 0.7,
   });
 
   const lastUserMessage = state.messages[state.messages.length - 1];
 
   const analysisPrompt = new HumanMessage(
-    `You are a QA assistant. Your task is to assess the quality of the first bug report description from a user.
-1.  Assess: Does the description contain any meaningful information that could relate to a software problem? Ignore greetings. Respond with a single word: 'GOOD' or 'BAD'.
-2.  Summarize: If the assessment is 'GOOD', provide a brief summary of the problem. If 'BAD', do not create a summary.
+    `You are a QA assistant. Your task is to assess the quality of the first bug report description from a user, which may include text and/or an image.
+1.  Assess: Does the combination of text and image contain any meaningful information that could relate to a software problem? A screenshot alone is sufficient if it clearly shows a potential issue. Ignore greetings. Respond with a single word: 'GOOD' or 'BAD'.
+2.  Summarize: If the assessment is 'GOOD', provide a brief summary of the problem based on all available information. If 'BAD', do not create a summary.
 
 Format your response as follows:
 Assessment: [GOOD or BAD]
@@ -196,7 +196,7 @@ const finalinfo_clarification_node = async (state: typeof AppState.State) => {
 
   const model = new ChatGoogleGenerativeAI({
     model: "gemini-1.5-flash-latest",
-    temperature: 0.9,
+    temperature: 0.7,
   });
 
   const history = state.messages;
@@ -247,11 +247,14 @@ const generateReportNode = async (state: typeof AppState.State) => {
   console.log("Węzeł: generuję raport błędu.");
   const model = new ChatGoogleGenerativeAI({
     model: "gemini-1.5-flash-latest",
-    temperature: 0,
+    temperature: 0.7,
   });
 
   const { initialDescription, imageProvided, imageAnalysis, additionalInfo } =
     state;
+
+  const userImageMessages = state.messages.filter(messageHasImage);
+  const imageCount = userImageMessages.length;
 
   const reportPrompt = `
     Jesteś doświadczonym analitykiem QA. Twoim zadaniem jest przekształcenie poniższych, luźnych notatek od użytkownika w profesjonalny, ustrukturyzowany raport błędu w formacie Markdown.
@@ -305,30 +308,35 @@ const generateReportNode = async (state: typeof AppState.State) => {
     ---
 
     **Załączniki:**
-    ${imageProvided ? "{{IMAGE_PLACEHOLDER}}" : "Brak załączników."}
+    ${
+      imageCount > 0
+        ? `Liczba załączników: ${imageCount}. Znajdziesz je dołączone do tej wiadomości.`
+        : "Brak załączników."
+    }
     `;
 
   const response = await model.invoke([new HumanMessage(reportPrompt)]);
   const reportContent = String(response.content).trim();
   console.log("Wygenerowany raport:", reportContent);
 
-  const userImageMessage = state.messages.find(messageHasImage);
-  let imageUrl: string | undefined;
+  const imageUrls: string[] = [];
 
-  if (userImageMessage && Array.isArray(userImageMessage.content)) {
-    const imagePart = userImageMessage.content.find(
-      (part) => (part as any).type === "image_url"
-    ) as any;
-    if (imagePart?.image_url?.url) {
-      imageUrl = imagePart.image_url.url;
+  for (const msg of userImageMessages) {
+    if (Array.isArray(msg.content)) {
+      const imagePart = msg.content.find(
+        (part) => (part as any).type === "image_url"
+      ) as any;
+      if (imagePart?.image_url?.url) {
+        imageUrls.push(imagePart.image_url.url);
+      }
     }
   }
 
   const reportMessageContent: any = [{ type: "text", text: reportContent }];
-  if (imageUrl) {
+  for (const url of imageUrls) {
     reportMessageContent.push({
       type: "image_url",
-      image_url: { url: imageUrl },
+      image_url: { url: url },
     });
   }
 
@@ -506,8 +514,14 @@ export async function POST(req: Request) {
 
     const formattedResult = {
       messages: result.messages.map((msg: BaseMessage) => {
-        let textContent = "";
-        let imageUrl: string | undefined = undefined;
+        const message: {
+          role: "user" | "assistant";
+          content: string;
+          imageUrls?: string[];
+        } = {
+          role: msg instanceof HumanMessage ? "user" : "assistant",
+          content: "",
+        };
 
         if (Array.isArray(msg.content)) {
           const textParts = msg.content.filter(
@@ -517,28 +531,23 @@ export async function POST(req: Request) {
             (part) => (part as any).type === "image_url"
           );
 
-          textContent = textParts.map((part: any) => part.text).join("\n");
-
-          if (imageParts.length > 0) {
-            const imagePart = imageParts[0] as any;
-            if (typeof imagePart.image_url === "string") {
-              imageUrl = imagePart.image_url;
-            } else if (
-              typeof imagePart.image_url === "object" &&
-              imagePart.image_url !== null
-            ) {
-              imageUrl = imagePart.image_url.url;
-            }
-          }
+          message.content = textParts.map((part: any) => part.text).join("\\n");
+          message.imageUrls = imageParts
+            .map((part: any) => {
+              if (typeof part.image_url === "string") {
+                return part.image_url;
+              }
+              if (typeof part.image_url === "object" && part.image_url?.url) {
+                return part.image_url.url;
+              }
+              return null;
+            })
+            .filter((url): url is string => url !== null);
         } else {
-          textContent = String(msg.content);
+          message.content = String(msg.content);
         }
 
-        return {
-          role: msg instanceof HumanMessage ? "user" : "assistant",
-          content: textContent,
-          imageUrl: imageUrl,
-        };
+        return message;
       }),
       threadId: threadId,
     };
