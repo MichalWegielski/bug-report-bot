@@ -1,6 +1,6 @@
 "use client";
 
-import { Paperclip, SendHorizonal, X } from "lucide-react";
+import { Paperclip, SendHorizonal, TriangleAlert, X } from "lucide-react";
 import { useState, ChangeEvent, useRef, FormEvent, useEffect } from "react";
 import Image from "next/image";
 import ReactMarkdown from "react-markdown";
@@ -10,6 +10,7 @@ interface Message {
   role: "user" | "assistant";
   content: string;
   imageUrls?: string[];
+  isError?: boolean;
 }
 
 export default function Home() {
@@ -67,7 +68,10 @@ export default function Home() {
         body: formData,
       });
 
-      if (!response.ok) throw new Error("Błąd serwera");
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Wystąpił nieznany błąd serwera.");
+      }
 
       const result = await response.json();
 
@@ -83,6 +87,16 @@ export default function Home() {
       }
     } catch (error) {
       console.error("Błąd podczas komunikacji z API:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "Wystąpił nieznany błąd.";
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `Przepraszam, wystąpił błąd: ${errorMessage}`,
+          isError: true,
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }
@@ -164,11 +178,19 @@ export default function Home() {
                   >
                     <div
                       className={`${
-                        msg.role === "user"
+                        msg.isError
+                          ? "bg-red-100 dark:bg-red-900/50 border border-red-500/50 text-red-800 dark:text-red-200 rounded-2xl"
+                          : msg.role === "user"
                           ? "bg-blue-500 text-white rounded-2xl"
                           : "bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-2xl"
                       } p-4 max-w-lg`}
                     >
+                      {msg.isError && (
+                        <div className="flex items-center gap-2 mb-2 font-bold">
+                          <TriangleAlert className="w-5 h-5 text-red-500" />
+                          <span>Wystąpił błąd</span>
+                        </div>
+                      )}
                       {msg.content && (
                         <ReactMarkdown>{msg.content}</ReactMarkdown>
                       )}
