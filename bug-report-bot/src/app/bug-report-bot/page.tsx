@@ -4,6 +4,7 @@ import { Paperclip, SendHorizonal, X } from "lucide-react";
 import { useState, ChangeEvent, useRef, FormEvent, useEffect } from "react";
 import Image from "next/image";
 import ReactMarkdown from "react-markdown";
+import Spinner from "./Spinner";
 
 interface Message {
   role: "user" | "assistant";
@@ -162,6 +163,7 @@ export default function Home() {
               </div>
             );
           })}
+          {isLoading && <Spinner />}
           <div ref={messagesEndRef} />
         </div>
 

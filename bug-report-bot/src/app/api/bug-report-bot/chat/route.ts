@@ -342,6 +342,9 @@ const generateReportNode = async (state: typeof AppState.State) => {
 
   return {
     messages: [
+      new AIMessage({
+        content: "Poniżej zobaczysz wygenerowany raport błędu.",
+      }),
       new AIMessage({ content: reportMessageContent }),
       new AIMessage({
         content:
