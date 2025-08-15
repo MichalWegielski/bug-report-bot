@@ -3,8 +3,22 @@ import { StateGraph, Annotation, START, END } from "@langchain/langgraph";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { BaseMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import { MemorySaver } from "@langchain/langgraph";
+import { z } from "zod";
+import { InitialAnalysisSchema } from "./schemas/initial-analysis.schema";
+import { FinalInfoQualitySchema } from "./schemas/final-info-quality.schema";
+import { ReportSchema } from "./schemas/report.schema";
 
 const memory = new MemorySaver();
+
+const creativeModel = new ChatGoogleGenerativeAI({
+  model: "gemini-1.5-flash-latest",
+  temperature: 0.7,
+});
+
+const analyticalModel = new ChatGoogleGenerativeAI({
+  model: "gemini-1.5-flash-latest",
+  temperature: 0,
+});
 
 const AppState = Annotation.Root({
   messages: Annotation<BaseMessage[]>({
@@ -48,36 +62,60 @@ const AppState = Annotation.Root({
   }),
 });
 
+const invokeClassificationModel = async (
+  userMessage: BaseMessage | string,
+  systemPrompt: string
+): Promise<string> => {
+  const messageContent =
+    typeof userMessage === "string"
+      ? new HumanMessage(userMessage)
+      : userMessage;
+  const response = await analyticalModel.invoke([
+    new HumanMessage(systemPrompt),
+    messageContent,
+  ]);
+  return String(response.content).trim().toUpperCase();
+};
+
 const analyzeInitialPrompt = async (state: typeof AppState.State) => {
   console.log("Analizuję pierwsze zapytanie (z oceną jakości)...");
-
-  const model = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash-latest",
-    temperature: 0.7,
-  });
 
   const lastUserMessage = state.messages[state.messages.length - 1];
 
   const analysisPrompt = new HumanMessage(
     `You are a QA assistant. Your task is to assess the quality of the first bug report description from a user, which may include text and/or an image.
-1.  Assess: Does the combination of text and image contain any meaningful information that could relate to a software problem? A screenshot alone is sufficient if it clearly shows a potential issue. Ignore greetings. Respond with a single word: 'GOOD' or 'BAD'.
-2.  Summarize: If the assessment is 'GOOD', provide a brief summary of the problem based on all available information. If 'BAD', do not create a summary.
+1.  Assess: Does the combination of text and image contain any meaningful information that could relate to a software problem? A screenshot alone is sufficient if it clearly shows a potential issue. Ignore greetings.
+2.  Summarize: If the assessment is 'good', provide a brief summary of the problem based on all available information. If 'bad', do not create a summary.
 
-Format your response as follows:
-Assessment: [GOOD or BAD]
-Summary: [Your summary here, or leave empty if BAD]`
+Respond with a JSON object with two keys: "assessment" (which can be "good" or "bad") and "summary" (a string, empty if assessment is "bad").
+Example for a good report: {"assessment": "good", "summary": "User reports that the login button is unresponsive on the main page."}
+Example for a bad report: {"assessment": "bad", "summary": ""}`
   );
 
-  const response = await model.invoke([analysisPrompt, lastUserMessage]);
-  const responseText = String(response.content);
-  console.log("Odpowiedź analityczna modelu:", responseText);
+  const response = await creativeModel.invoke([
+    analysisPrompt,
+    lastUserMessage,
+  ]);
+  const responseText = String(response.content)
+    .replace(/```json|```/g, "")
+    .trim();
+  console.log("Odpowiedź analityczna modelu (JSON):", responseText);
 
-  const assessmentMatch = responseText.match(/Assessment: (GOOD|BAD)/);
-  const summaryMatch = responseText.match(/Summary: (.*)/);
+  let quality: "good" | "bad" = "bad";
+  let summary = "";
 
-  const quality =
-    assessmentMatch && assessmentMatch[1] === "GOOD" ? "good" : "bad";
-  const summary = summaryMatch ? summaryMatch[1].trim() : "";
+  try {
+    const parsedJson = JSON.parse(responseText);
+    const validatedData = InitialAnalysisSchema.parse(parsedJson);
+    quality = validatedData.assessment;
+    summary = validatedData.summary;
+  } catch (e) {
+    console.error("Błąd parsowania lub walidacji JSON:", e);
+    if (responseText.toUpperCase().includes("GOOD")) {
+      quality = "good";
+    }
+  }
+
   const hasImage = messageHasImage(lastUserMessage);
 
   return {
@@ -102,17 +140,9 @@ const askForScreenshotNode = async (state: typeof AppState.State) => {
 const isNegativeResponse = async (msgContent: any): Promise<boolean> => {
   if (typeof msgContent !== "string") return false;
 
-  const model = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash-latest",
-    temperature: 0,
-  });
+  const systemPrompt = `You are a strict classifier. Answer with a single word YES if the following user reply is a refusal/decline (meaning they don't want or don't have what was requested). Answer NO otherwise.`;
 
-  const systemPrompt = new HumanMessage(
-    `You are a strict classifier. Answer with a single word YES if the following user reply is a refusal/decline (meaning they don't want or don't have what was requested). Answer NO otherwise.`
-  );
-
-  const res = await model.invoke([systemPrompt, new HumanMessage(msgContent)]);
-  const ans = String(res.content).trim().toUpperCase();
+  const ans = await invokeClassificationModel(msgContent, systemPrompt);
   return ans.startsWith("Y");
 };
 
@@ -162,42 +192,38 @@ const askForFinalInfoNode = async (state: typeof AppState.State) => {
 const triage_final_info_node = async (state: typeof AppState.State) => {
   console.log("Node: classifying intent of the final response.");
   const lastUserMessage = state.messages[state.messages.length - 1];
-  const model = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash-latest",
-    temperature: 0,
-  });
 
-  const triagePrompt = new HumanMessage(
-    `Jesteś klasyfikatorem intencji. Użytkownik odpowiedział na pytanie 'Czy chcesz dodać coś jeszcze?'. Przeanalizuj jego odpowiedź i zaklasyfikuj ją do jednej z trzech kategorii:
+  const triagePrompt = `Jesteś klasyfikatorem intencji. Użytkownik odpowiedział na pytanie 'Czy chcesz dodać coś jeszcze?'. Przeanalizuj jego odpowiedź i zaklasyfikuj ją do jednej z trzech kategorii:
 
 POSITIVE: Użytkownik dostarcza nowych, sensownych informacji (tekst lub obraz).
 NEGATIVE: Użytkownik odmawia dodania informacji (np. 'nie', 'to wszystko', 'generuj raport').
 UNCLEAR: Odpowiedź jest bez sensu, to losowe znaki, wulgaryzmy lub jest zbyt niejasna, by ją zrozumieć.
 
-Odpowiedz tylko jednym słowem: POSITIVE, NEGATIVE, lub UNCLEAR.`
+Odpowiedz tylko jednym słowem: POSITIVE, NEGATIVE, lub UNCLEAR.`;
+
+  const classificationResult = await invokeClassificationModel(
+    lastUserMessage,
+    triagePrompt
   );
 
-  const response = await model.invoke([triagePrompt, lastUserMessage]);
-  const classification = String(response.content).trim().toUpperCase() as
-    | "POSITIVE"
-    | "NEGATIVE"
-    | "UNCLEAR";
-
-  console.log("Classification result:", classification);
-
-  return {
-    finalInfoQuality: classification,
-    waitingForAdditional: false,
-  };
+  try {
+    const validatedQuality = FinalInfoQualitySchema.parse(classificationResult);
+    console.log("Classification result:", validatedQuality);
+    return {
+      finalInfoQuality: validatedQuality,
+      waitingForAdditional: false,
+    };
+  } catch (e) {
+    console.error("Nieznana kategoria od modelu:", classificationResult, e);
+    return {
+      finalInfoQuality: "UNCLEAR",
+      waitingForAdditional: false,
+    };
+  }
 };
 
 const finalinfo_clarification_node = async (state: typeof AppState.State) => {
   console.log("Node: asking for clarification of an unclear response.");
-
-  const model = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash-latest",
-    temperature: 0.7,
-  });
 
   const history = state.messages;
 
@@ -205,7 +231,10 @@ const finalinfo_clarification_node = async (state: typeof AppState.State) => {
     `Jestes QA asystentem. Wygeneruj wiadomość, która zostanie wysłana do użytkownika. Odpowiedz po polsku, na to ze uzytkownik dostarczyl wiadomosc o niejasnym charakterze.`
   );
 
-  const response = await model.invoke([...history, clarifyFinalInfoPrompt]);
+  const response = await creativeModel.invoke([
+    ...history,
+    clarifyFinalInfoPrompt,
+  ]);
   const responseText = String(response.content);
 
   const responseMessage = new AIMessage({ content: responseText });
@@ -218,17 +247,16 @@ const finalinfo_clarification_node = async (state: typeof AppState.State) => {
 
 const analyzeAdditionalInfoNode = async (state: typeof AppState.State) => {
   console.log("Węzeł: analizuję dodatkowe informacje (w tym obraz).");
-  const model = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash-latest",
-    temperature: 0,
-  });
 
   const lastUserMessage = state.messages[state.messages.length - 1];
   const analysisPrompt = new HumanMessage(
     "Przeanalizuj poniższą, dodatkową wiadomość (może zawierać tekst i/lub obraz) i streść zawarte w niej informacje w kontekście zgłoszenia błędu."
   );
 
-  const response = await model.invoke([analysisPrompt, lastUserMessage]);
+  const response = await analyticalModel.invoke([
+    analysisPrompt,
+    lastUserMessage,
+  ]);
   const analyzedInfo = String(response.content);
   console.log("Przeanalizowane dodatkowe info:", analyzedInfo);
 
@@ -245,79 +273,105 @@ const analyzeAdditionalInfoNode = async (state: typeof AppState.State) => {
 
 const generateReportNode = async (state: typeof AppState.State) => {
   console.log("Węzeł: generuję raport błędu.");
-  const model = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash-latest",
-    temperature: 0.7,
-  });
 
-  const { initialDescription, imageProvided, imageAnalysis, additionalInfo } =
-    state;
+  const { initialDescription, imageAnalysis, additionalInfo } = state;
 
   const userImageMessages = state.messages.filter(messageHasImage);
   const imageCount = userImageMessages.length;
 
   const reportPrompt = `
-    Jesteś doświadczonym analitykiem QA. Twoim zadaniem jest przekształcenie poniższych, luźnych notatek od użytkownika w profesjonalny, ustrukturyzowany raport błędu w formacie Markdown.
+    Jesteś doświadczonym analitykiem QA. Twoim zadaniem jest przekształcenie poniższych, luźnych notatek od użytkownika w profesjonalny, ustrukturyzowany raport błędu w formacie JSON.
     
     **Twoje zadania:**
-    1.  **Stwórz zwięzły, techniczny tytuł** na podstawie opisu problemu.
-    2.  **Wypełnij sekcje raportu** na podstawie dostępnych danych.
-    3.  Jeśli jakaś informacja nie została podana (np. URL, dokładne kroki), **zostaw w tym miejscu adnotację**, np. "[URL do uzupełnienia przez zespół]". Nie wymyślaj danych.
-    4.  Dokonaj **krótkiej, technicznej analizy** problemu w sekcji "Dodatkowe informacje i analiza", bazując na wszystkich dostępnych informacjach (w tym analizie obrazu, jeśli istnieje).
-    5.  Zachowaj DOKŁADNIE strukturę i formatowanie z poniższego szablonu. Zwróć szczególną uwagę, aby **przed i po każdej linii \`---\` znajdowała się pusta linia (enter)**. To kluczowe dla czytelności raportu.
+    1.  **Stwórz zwięzły, techniczny tytuł**.
+    2.  **Wypełnij pola obiektu JSON** na podstawie dostępnych danych.
+    3.  Jeśli jakaś informacja nie została podana (np. URL, dokładne kroki), **pozostaw to pole jako puste lub pomiń je**, zgodnie ze schematem. Nie wymyślaj danych.
+    4.  Dokonaj **krótkiej, technicznej analizy** w polu "technicalAnalysis".
 
     **Dane wejściowe od użytkownika:**
     -   **Początkowy opis:** ${initialDescription}
     -   **Analiza obrazu (jeśli jest):** ${imageAnalysis || "Brak"}
     -   **Dodatkowe informacje:** ${additionalInfo || "Brak"}
 
-    **Szablon raportu do wypełnienia:**
-
-    **Tytuł:** [Twój wygenerowany tytuł]
-
-    ---
-
-    **Środowisko:**
-    -   **URL:** [URL do uzupełnienia przez zespół]
-    -   **Przeglądarka:** [Do uzupełnienia na podstawie informacji od użytkownika, jeśli dostępne]
-    -   **System operacyjny:** [Do uzupełnienia na podstawie informacji od użytkownika, jeśli dostępne]
-    -   **Dodatkowe uwagi:** [Jeśli użytkownik podał, np. "Nie występuje w Firefox"]
-
-    ---
-
-    **Kroki do odtworzenia:**
-    1.  [Krok 1 do uzupełnienia na podstawie opisu]
-    2.  [Krok 2 do uzupełnienia na podstawie opisu]
-    3.  ...
-
-    ---
-
-    **Oczekiwany rezultat:**
-    [Opisz, jak powinno to działać, na podstawie opisu problemu]
-
-    ---
-
-    **Rzeczywisty rezultat:**
-    [Opisz, co się faktycznie stało, na podstawie opisu problemu]
-
-    ---
-
-    **Dodatkowe informacje i analiza:**
-    [Twoja techniczna analiza problemu]
-
-    ---
-
-    **Załączniki:**
-    ${
-      imageCount > 0
-        ? `Liczba załączników: ${imageCount}. Znajdziesz je dołączone do tej wiadomości.`
-        : "Brak załączników."
+    **Schemat JSON, którego musisz przestrzegać:**
+    \`\`\`json
+    {
+      "title": "string",
+      "environment": { "url": "string", "browser": "string", "os": "string" },
+      "stepsToReproduce": ["string"],
+      "expectedResult": "string",
+      "actualResult": "string",
+      "technicalAnalysis": "string"
     }
-    `;
+    \`\`\`
+    
+    Zwróć TYLKO i WYŁĄCZNIE poprawny obiekt JSON, bez żadnych dodatkowych opisów czy formatowania.`;
 
-  const response = await model.invoke([new HumanMessage(reportPrompt)]);
-  const reportContent = String(response.content).trim();
-  console.log("Wygenerowany raport:", reportContent);
+  const response = await creativeModel.invoke([new HumanMessage(reportPrompt)]);
+  const responseText = String(response.content)
+    .replace(/```json|```/g, "")
+    .trim();
+  console.log("Wygenerowany raport (JSON):", responseText);
+
+  let reportContent =
+    "Przepraszamy, wystąpił błąd podczas generowania raportu.";
+  try {
+    const parsedJson = JSON.parse(responseText);
+    const validatedReport = ReportSchema.parse(parsedJson);
+
+    const markdownReport = `
+**Tytuł:** ${validatedReport.title}
+
+---
+
+**Środowisko:**
+-   **URL:** ${
+      validatedReport.environment?.url || "[URL do uzupełnienia przez zespół]"
+    }
+-   **Przeglądarka:** ${
+      validatedReport.environment?.browser ||
+      "[Do uzupełnienia na podstawie informacji od użytkownika, jeśli dostępne]"
+    }
+-   **System operacyjny:** ${
+      validatedReport.environment?.os ||
+      "[Do uzupełnienia na podstawie informacji od użytkownika, jeśli dostępne]"
+    }
+
+---
+
+**Kroki do odtworzenia:**
+${validatedReport.stepsToReproduce
+  .map((step, i) => `${i + 1}. ${step}`)
+  .join("\n")}
+
+---
+
+**Oczekiwany rezultat:**
+${validatedReport.expectedResult}
+
+---
+
+**Rzeczywisty rezultat:**
+${validatedReport.actualResult}
+
+---
+
+**Dodatkowe informacje i analiza:**
+${validatedReport.technicalAnalysis}
+
+---
+
+**Załączniki:**
+${
+  imageCount > 0
+    ? `Liczba załączników: ${imageCount}. Znajdziesz je dołączone do tej wiadomości.`
+    : "Brak załączników."
+}
+    `;
+    reportContent = markdownReport.trim();
+  } catch (e) {
+    console.error("Błąd parsowania lub walidacji JSON raportu:", e);
+  }
 
   const imageUrls: string[] = [];
 
@@ -357,11 +411,6 @@ const generateReportNode = async (state: typeof AppState.State) => {
 const repromptNode = async (state: typeof AppState.State) => {
   console.log("Węzeł: proszę o lepszy opis.");
 
-  const model = new ChatGoogleGenerativeAI({
-    model: "gemini-1.5-flash-latest",
-    temperature: 0.7,
-  });
-
   const history = state.messages;
 
   const answerBadQualityPrompt = new HumanMessage(
@@ -370,7 +419,10 @@ const repromptNode = async (state: typeof AppState.State) => {
     Odpowiedz krótko (maksymalnie 2 zdania), po polsku, w uprzejmym tonie.`
   );
 
-  const response = await model.invoke([...history, answerBadQualityPrompt]);
+  const response = await creativeModel.invoke([
+    ...history,
+    answerBadQualityPrompt,
+  ]);
   const responseText = String(response.content);
 
   const responseMessage = new AIMessage({ content: responseText });
