@@ -43,6 +43,9 @@ const AppState = Annotation.Root({
   initialAnalysisQuality: Annotation<"good" | "bad">({
     reducer: (x, y) => y,
   }),
+  finalInfoQuality: Annotation<"POSITIVE" | "NEGATIVE" | "UNCLEAR">({
+    reducer: (x, y) => y,
+  }),
 });
 
 const analyzeInitialPrompt = async (state: typeof AppState.State) => {
@@ -105,7 +108,7 @@ const isNegativeResponse = async (msgContent: any): Promise<boolean> => {
   });
 
   const systemPrompt = new HumanMessage(
-    `You are a strict classifier. Answer with single word YES if the following user reply is a refusal/decline (meaning they don't want or don't have what was requested). Answer NO otherwise.`
+    `You are a strict classifier. Answer with a single word YES if the following user reply is a refusal/decline (meaning they don't want or don't have what was requested). Answer NO otherwise.`
   );
 
   const res = await model.invoke([systemPrompt, new HumanMessage(msgContent)]);
@@ -156,21 +159,60 @@ const askForFinalInfoNode = async (state: typeof AppState.State) => {
   };
 };
 
-const handleFinalInfoNode = async (state: typeof AppState.State) => {
-  console.log("Węzeł: przetwarzam końcowe informacje.");
+const triage_final_info_node = async (state: typeof AppState.State) => {
+  console.log("Node: classifying intent of the final response.");
   const lastUserMessage = state.messages[state.messages.length - 1];
-  const finalInfo = String(lastUserMessage.content);
-  console.log("Dodatkowe informacje od użytkownika:", finalInfo);
+  const model = new ChatGoogleGenerativeAI({
+    model: "gemini-1.5-flash-latest",
+    temperature: 0,
+  });
 
-  if (await isNegativeResponse(finalInfo)) {
-    return {
-      additionalDeclined: true,
-      waitingForAdditional: false,
-    };
-  }
+  const triagePrompt = new HumanMessage(
+    `Jesteś klasyfikatorem intencji. Użytkownik odpowiedział na pytanie 'Czy chcesz dodać coś jeszcze?'. Przeanalizuj jego odpowiedź i zaklasyfikuj ją do jednej z trzech kategorii:
+
+POSITIVE: Użytkownik dostarcza nowych, sensownych informacji (tekst lub obraz).
+NEGATIVE: Użytkownik odmawia dodania informacji (np. 'nie', 'to wszystko', 'generuj raport').
+UNCLEAR: Odpowiedź jest bez sensu, to losowe znaki, wulgaryzmy lub jest zbyt niejasna, by ją zrozumieć.
+
+Odpowiedz tylko jednym słowem: POSITIVE, NEGATIVE, lub UNCLEAR.`
+  );
+
+  const response = await model.invoke([triagePrompt, lastUserMessage]);
+  const classification = String(response.content).trim().toUpperCase() as
+    | "POSITIVE"
+    | "NEGATIVE"
+    | "UNCLEAR";
+
+  console.log("Classification result:", classification);
 
   return {
+    finalInfoQuality: classification,
     waitingForAdditional: false,
+  };
+};
+
+const finalinfo_clarification_node = async (state: typeof AppState.State) => {
+  console.log("Node: asking for clarification of an unclear response.");
+
+  const model = new ChatGoogleGenerativeAI({
+    model: "gemini-1.5-flash-latest",
+    temperature: 0.9,
+  });
+
+  const history = state.messages;
+
+  const clarifyFinalInfoPrompt = new HumanMessage(
+    `Jestes QA asystentem. Wygeneruj wiadomość, która zostanie wysłana do użytkownika. Odpowiedz po polsku, na to ze uzytkownik dostarczyl wiadomosc o niejasnym charakterze.`
+  );
+
+  const response = await model.invoke([...history, clarifyFinalInfoPrompt]);
+  const responseText = String(response.content);
+
+  const responseMessage = new AIMessage({ content: responseText });
+
+  return {
+    messages: [responseMessage],
+    waitingForAdditional: true,
   };
 };
 
@@ -348,6 +390,7 @@ const masterRouter = (state: typeof AppState.State) => {
     waitingForAdditional,
     additionalInfo: !!additionalInfo,
     additionalDeclined,
+    finalInfoQuality: state.finalInfoQuality,
   });
 
   if (!initialDescription) {
@@ -374,8 +417,8 @@ const masterRouter = (state: typeof AppState.State) => {
       return "generate_report";
     }
     if (waitingForAdditional) {
-      console.log("Decision: handle_final_info");
-      return "handle_final_info";
+      console.log("Decision: triage_final_info_node");
+      return "triage_final_info_node";
     }
     console.log("Decision: ask_for_final_info");
     return "ask_for_final_info";
@@ -390,7 +433,8 @@ const app = new StateGraph(AppState)
   .addNode("ask_for_screenshot", askForScreenshotNode)
   .addNode("handle_screenshot_response", handleScreenshotResponseNode)
   .addNode("ask_for_final_info", askForFinalInfoNode)
-  .addNode("handle_final_info", handleFinalInfoNode)
+  .addNode("triage_final_info_node", triage_final_info_node)
+  .addNode("finalinfo_clarification_node", finalinfo_clarification_node)
   .addNode("analyze_additional_info", analyzeAdditionalInfoNode)
   .addNode("reprompt_node", repromptNode)
   .addNode("generate_report", generateReportNode)
@@ -402,11 +446,17 @@ const app = new StateGraph(AppState)
     return "reprompt_node";
   })
   .addConditionalEdges("handle_screenshot_response", masterRouter)
-  .addConditionalEdges("handle_final_info", (state) => {
-    if (state.additionalDeclined) {
-      return "generate_report";
+  .addConditionalEdges("triage_final_info_node", (state) => {
+    switch (state.finalInfoQuality) {
+      case "POSITIVE":
+        return "analyze_additional_info";
+      case "NEGATIVE":
+        return "generate_report";
+      case "UNCLEAR":
+        return "finalinfo_clarification_node";
+      default:
+        return "finalinfo_clarification_node";
     }
-    return "analyze_additional_info";
   })
   .addConditionalEdges("reprompt_node", masterRouter)
   .addEdge("analyze_additional_info", "generate_report")
@@ -416,6 +466,7 @@ const app = new StateGraph(AppState)
       "ask_for_screenshot",
       "ask_for_final_info",
       "reprompt_node",
+      "finalinfo_clarification_node",
     ],
     checkpointer: memory,
   });
